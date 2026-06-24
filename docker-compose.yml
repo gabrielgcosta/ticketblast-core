@@ -1,0 +1,119 @@
+version: '3.8'
+
+services:
+  # Primary Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: ticketblast-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ticketblast_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ticketblast_password}
+      POSTGRES_DB: ${POSTGRES_DB:-ticketblast_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-ticketblast_user} -d $${POSTGRES_DB:-ticketblast_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # In-Memory Cache & Distributed Lock
+  redis:
+    image: redis:7-alpine
+    container_name: ticketblast-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Asynchronous Event Broker
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: ticketblast-rabbitmq
+    restart: unless-stopped
+    ports:
+      - "5672:5672"      # RabbitMQ AMQP port
+      - "15672:15672"    # Management UI
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:-guest}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Observability Metrics Engine
+  prometheus:
+    image: prom/prometheus:v2.49.1
+    container_name: ticketblast-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+
+  # ==============================================================================
+  # GO APPLICATIONS (Modularized & Secured Runtime Isolation)
+  # ==============================================================================
+  
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        TARGET: api
+    container_name: ticketblast-api
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #     args:
+  #       TARGET: worker
+  #   container_name: ticketblast-worker
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     rabbitmq:
+  #       condition: service_healthy
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  rabbitmq_data:
+    driver: local
+  prometheus_data:
+    driver: local
