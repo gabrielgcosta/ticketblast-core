@@ -1,0 +1,55 @@
+# ##############################################################################
+# TicketBlast Core - Git Ignore Configuration
+# ##############################################################################
+
+# Compiled binaries and packaging
+bin/
+dist/
+release/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test and coverage artifacts
+*.test
+*.out
+*.prof
+*.cpu
+coverage.txt
+htmlcov/
+
+# Go module vendor directory (only if explicitly using vendoring)
+# vendor/
+
+# Environment and sensitive configuration files
+.env
+.env.*
+!.env.example
+*.local
+
+# IDEs and Editor configurations
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.history/
+.elixir_ls/
+.direnv/
+
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# Developer/temporary files
+tmp/
+temp/
+logs/
+*.log
