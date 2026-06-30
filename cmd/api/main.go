@@ -7,6 +7,8 @@ import (
 	"os"
 
 	"github.com/gabrielgcosta/ticketblast-core/db"
+	"github.com/gabrielgcosta/ticketblast-core/internal/infra/web/middleware"
+	"github.com/gabrielgcosta/ticketblast-core/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -15,6 +17,8 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("No .env file found, using system environment variables")
 	}
+
+	logger.Init(os.Getenv("APP_ENV"))
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
@@ -45,7 +49,9 @@ func main() {
 		log.Fatal("Critical: Database migration failed: ", err)
 	}
 
-	r := gin.Default()
+	r := gin.New()
+	r.Use(middleware.Logger())
+	r.Use(gin.Recovery())
 
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
