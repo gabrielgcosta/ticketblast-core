@@ -1,15 +1,22 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 
 	"github.com/gabrielgcosta/ticketblast-core/db"
+	"github.com/gabrielgcosta/ticketblast-core/db/sqlc"
+	"github.com/gabrielgcosta/ticketblast-core/internal/infra/auth"
+	infraDB "github.com/gabrielgcosta/ticketblast-core/internal/infra/db"
+	"github.com/gabrielgcosta/ticketblast-core/internal/infra/web/handlers"
 	"github.com/gabrielgcosta/ticketblast-core/internal/infra/web/middleware"
+	"github.com/gabrielgcosta/ticketblast-core/internal/usecase"
 	"github.com/gabrielgcosta/ticketblast-core/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
 
@@ -45,17 +52,68 @@ func main() {
 		dbURL = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", dbUser, dbPassword, dbHost, dbPort, dbName)
 	}
 
+	// Run migrations
 	if err := db.RunMigrations(dbURL); err != nil {
 		log.Fatal("Critical: Database migration failed: ", err)
 	}
+
+	ctx := context.Background()
+
+	// Initialize Pgx connection pool
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		log.Fatal("Critical: Failed to create database connection pool: ", err)
+	}
+	defer pool.Close()
+
+	// Ping database to verify connection
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatal("Critical: Failed to ping database: ", err)
+	}
+
+	// Initialize SQLC queries
+	queries := sqlc.New(pool)
+
+	// Initialize repositories
+	userRepo := infraDB.NewPostgresUserRepository(queries)
+
+	// Initialize use cases
+	registerUC := usecase.NewRegisterUserUseCase(userRepo)
+	loginUC := usecase.NewLoginUserUseCase(userRepo)
+
+	// Initialize Auth Token Engine
+	jwtSecret := os.Getenv("JWT_SECRET")
+	tokenEngine := auth.NewTokenEngine(jwtSecret)
+
+	// Initialize handlers
+	userHandler := handlers.NewUserHandler(registerUC, loginUC, tokenEngine)
 
 	r := gin.New()
 	r.Use(middleware.Logger())
 	r.Use(gin.Recovery())
 
+	// Public routes
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
+
+	r.POST("/register", userHandler.Register)
+	r.POST("/login", userHandler.Login)
+
+	// Private routes
+	private := r.Group("/")
+	private.Use(middleware.Auth(tokenEngine))
+	{
+		private.GET("/protected-ping", func(c *gin.Context) {
+			userID, _ := c.Get("user_id")
+			role, _ := c.Get("user_role")
+			c.JSON(http.StatusOK, gin.H{
+				"message": "pong from protected area",
+				"user_id": userID,
+				"role":    role,
+			})
+		})
+	}
 
 	log.Println("Starting API server on port :8080...")
 	if err := r.Run(":8080"); err != nil {
