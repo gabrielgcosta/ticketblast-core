@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/gabrielgcosta/ticketblast-core/db"
 	"github.com/gabrielgcosta/ticketblast-core/db/sqlc"
 	"github.com/gabrielgcosta/ticketblast-core/internal/infra/auth"
+	"github.com/gabrielgcosta/ticketblast-core/internal/infra/cache"
 	infraDB "github.com/gabrielgcosta/ticketblast-core/internal/infra/db"
 	"github.com/gabrielgcosta/ticketblast-core/internal/infra/web/handlers"
 	"github.com/gabrielgcosta/ticketblast-core/internal/infra/web/middleware"
@@ -74,12 +76,41 @@ func main() {
 	// Initialize SQLC queries
 	queries := sqlc.New(pool)
 
+	// Initialize Redis Cache Service
+	redisHost := os.Getenv("REDIS_HOST")
+	if redisHost == "" {
+		redisHost = "localhost"
+	}
+	redisPort := os.Getenv("REDIS_PORT")
+	if redisPort == "" {
+		redisPort = "6379"
+	}
+	redisAddr := fmt.Sprintf("%s:%s", redisHost, redisPort)
+	redisPassword := os.Getenv("REDIS_PASSWORD")
+	redisDBStr := os.Getenv("REDIS_DB")
+	redisDB := 0
+	if redisDBStr != "" {
+		if val, err := strconv.Atoi(redisDBStr); err == nil {
+			redisDB = val
+		}
+	}
+
+	redisCache := cache.NewRedisCacheService(redisAddr, redisPassword, redisDB)
+	defer redisCache.Close()
+
+	// Ping Redis to verify connection
+	if err := redisCache.Ping(ctx); err != nil {
+		logger.Log.Fatal("Critical: Failed to ping Redis", zap.Error(err))
+	}
+
 	// Initialize repositories
 	userRepo := infraDB.NewPostgresUserRepository(queries)
+	eventRepo := infraDB.NewPostgresEventRepository(queries)
 
 	// Initialize use cases
 	registerUC := usecase.NewRegisterUserUseCase(userRepo)
 	loginUC := usecase.NewLoginUserUseCase(userRepo)
+	listActiveEventsUC := usecase.NewListActiveEventsUseCase(eventRepo, redisCache)
 
 	// Initialize Auth Token Engine
 	jwtSecret := os.Getenv("JWT_SECRET")
@@ -87,6 +118,7 @@ func main() {
 
 	// Initialize handlers
 	userHandler := handlers.NewUserHandler(registerUC, loginUC, tokenEngine)
+	eventHandler := handlers.NewEventHandler(listActiveEventsUC)
 
 	r := gin.New()
 	r.Use(middleware.Logger())
@@ -99,6 +131,7 @@ func main() {
 
 	r.POST("/register", userHandler.Register)
 	r.POST("/login", userHandler.Login)
+	r.GET("/events/active", eventHandler.ListActive)
 
 	// Private routes
 	private := r.Group("/")
