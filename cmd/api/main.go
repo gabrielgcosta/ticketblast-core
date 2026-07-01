@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 
@@ -18,11 +17,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"go.uber.org/zap"
 )
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using system environment variables")
+		logger.Log.Info("No .env file found, using system environment variables")
 	}
 
 	logger.Init(os.Getenv("APP_ENV"))
@@ -54,7 +54,7 @@ func main() {
 
 	// Run migrations
 	if err := db.RunMigrations(dbURL); err != nil {
-		log.Fatal("Critical: Database migration failed: ", err)
+		logger.Log.Fatal("Critical: Database migration failed", zap.Error(err))
 	}
 
 	ctx := context.Background()
@@ -62,13 +62,13 @@ func main() {
 	// Initialize Pgx connection pool
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
-		log.Fatal("Critical: Failed to create database connection pool: ", err)
+		logger.Log.Fatal("Critical: Failed to create database connection pool", zap.Error(err))
 	}
 	defer pool.Close()
 
 	// Ping database to verify connection
 	if err := pool.Ping(ctx); err != nil {
-		log.Fatal("Critical: Failed to ping database: ", err)
+		logger.Log.Fatal("Critical: Failed to ping database", zap.Error(err))
 	}
 
 	// Initialize SQLC queries
@@ -115,8 +115,8 @@ func main() {
 		})
 	}
 
-	log.Println("Starting API server on port :8080...")
+	logger.Log.Info("Starting API server on port :8080...")
 	if err := r.Run(":8080"); err != nil {
-		log.Fatal("Critical: Server failed to start: ", err)
+		logger.Log.Fatal("Critical: Server failed to start", zap.Error(err))
 	}
 }
