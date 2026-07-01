@@ -4,8 +4,8 @@ import (
 	"embed"
 	"errors"
 	"fmt"
-	"log"
 
+	"github.com/gabrielgcosta/ticketblast-core/pkg/logger"
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
@@ -17,7 +17,7 @@ var migrationFiles embed.FS
 // RunMigrations runs all database migrations from the embedded filesystem.
 // It traps migrate.ErrNoChange to allow the application to boot normally if no changes are needed.
 func RunMigrations(databaseURL string) error {
-	log.Println("Starting database migrations...")
+	logger.Log.Info("Starting database migrations...")
 
 	d, err := iofs.New(migrationFiles, "migrations")
 	if err != nil {
@@ -32,13 +32,13 @@ func RunMigrations(databaseURL string) error {
 
 	if err := m.Up(); err != nil {
 		if errors.Is(err, migrate.ErrNoChange) {
-			log.Println("Database schema is already up to date.")
+			logger.Log.Info("Database schema is already up to date.")
 			return nil
 		}
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
-	log.Println("Database migrations applied successfully!")
+	logger.Log.Info("Database migrations applied successfully!")
 	return nil
 }
 
