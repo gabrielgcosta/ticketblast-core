@@ -26,6 +26,7 @@ type Querier interface {
 	GetTicketByID(ctx context.Context, id pgtype.UUID) (Ticket, error)
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id pgtype.UUID) (User, error)
+	ListActiveEvents(ctx context.Context, eventDate pgtype.Timestamptz) ([]Event, error)
 	ListEvents(ctx context.Context, arg ListEventsParams) ([]Event, error)
 	ListOrderItemsByOrder(ctx context.Context, orderID pgtype.UUID) ([]OrderItem, error)
 	ListOrdersByUser(ctx context.Context, arg ListOrdersByUserParams) ([]Order, error)

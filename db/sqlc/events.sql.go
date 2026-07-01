@@ -78,6 +78,41 @@ func (q *Queries) GetEventByID(ctx context.Context, id pgtype.UUID) (Event, erro
 	return i, err
 }
 
+const listActiveEvents = `-- name: ListActiveEvents :many
+SELECT id, title, description, location, event_date, created_at, updated_at
+FROM events
+WHERE event_date >= $1
+ORDER BY event_date ASC
+`
+
+func (q *Queries) ListActiveEvents(ctx context.Context, eventDate pgtype.Timestamptz) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listActiveEvents, eventDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.Description,
+			&i.Location,
+			&i.EventDate,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEvents = `-- name: ListEvents :many
 SELECT id, title, description, location, event_date, created_at, updated_at
 FROM events

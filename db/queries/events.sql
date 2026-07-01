@@ -31,3 +31,9 @@ RETURNING id, title, description, location, event_date, created_at, updated_at;
 -- name: DeleteEvent :exec
 DELETE FROM events
 WHERE id = $1;
+
+-- name: ListActiveEvents :many
+SELECT id, title, description, location, event_date, created_at, updated_at
+FROM events
+WHERE event_date >= $1
+ORDER BY event_date ASC;
