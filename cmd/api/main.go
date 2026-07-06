@@ -106,11 +106,16 @@ func main() {
 	// Initialize repositories
 	userRepo := infraDB.NewPostgresUserRepository(queries)
 	eventRepo := infraDB.NewPostgresEventRepository(queries)
+	ticketRepo := infraDB.NewPostgresTicketRepository(queries)
+	orderRepo := infraDB.NewPostgresOrderRepository(queries)
+	txManager := infraDB.NewPostgresTxManager(pool, queries)
 
 	// Initialize use cases
 	registerUC := usecase.NewRegisterUserUseCase(userRepo)
 	loginUC := usecase.NewLoginUserUseCase(userRepo)
 	listActiveEventsUC := usecase.NewListActiveEventsUseCase(eventRepo, redisCache)
+	createEventUC := usecase.NewCreateEventUseCase(eventRepo, ticketRepo, redisCache, txManager)
+	purchaseUC := usecase.NewPurchaseUseCase(ticketRepo, orderRepo, redisCache, txManager)
 
 	// Initialize Auth Token Engine
 	jwtSecret := os.Getenv("JWT_SECRET")
@@ -118,7 +123,8 @@ func main() {
 
 	// Initialize handlers
 	userHandler := handlers.NewUserHandler(registerUC, loginUC, tokenEngine)
-	eventHandler := handlers.NewEventHandler(listActiveEventsUC)
+	eventHandler := handlers.NewEventHandler(listActiveEventsUC, createEventUC)
+	purchaseHandler := handlers.NewPurchaseHandler(purchaseUC)
 
 	r := gin.New()
 	r.Use(middleware.Logger())
@@ -146,6 +152,8 @@ func main() {
 				"role":    role,
 			})
 		})
+		private.POST("/events", eventHandler.CreateEvent)
+		private.POST("/orders", purchaseHandler.Purchase)
 	}
 
 	logger.Log.Info("Starting API server on port :8080...")

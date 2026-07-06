@@ -9,12 +9,17 @@ import (
 )
 
 type EventHandler struct {
-	listActiveUC *usecase.ListActiveEventsUseCase
+	listActiveUC  *usecase.ListActiveEventsUseCase
+	createEventUC *usecase.CreateEventUseCase
 }
 
-func NewEventHandler(listActiveUC *usecase.ListActiveEventsUseCase) *EventHandler {
+func NewEventHandler(
+	listActiveUC *usecase.ListActiveEventsUseCase,
+	createEventUC *usecase.CreateEventUseCase,
+) *EventHandler {
 	return &EventHandler{
-		listActiveUC: listActiveUC,
+		listActiveUC:  listActiveUC,
+		createEventUC: createEventUC,
 	}
 }
 
@@ -26,4 +31,20 @@ func (h *EventHandler) ListActive(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, output)
+}
+
+func (h *EventHandler) CreateEvent(c *gin.Context) {
+	var input usecase.CreateEventInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		apierror.Write(c, apierror.BadRequest("Invalid request body", err))
+		return
+	}
+
+	output, err := h.createEventUC.Execute(c.Request.Context(), input)
+	if err != nil {
+		apierror.Write(c, apierror.Internal("Failed to create event", err))
+		return
+	}
+
+	c.JSON(http.StatusCreated, output)
 }

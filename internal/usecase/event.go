@@ -10,13 +10,11 @@ import (
 	"go.uber.org/zap"
 )
 
-type EventRepository interface {
-	ListActive(ctx context.Context, now time.Time) ([]*entity.Event, error)
-}
-
 type CacheService interface {
 	Get(ctx context.Context, key string) (string, error)
 	Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+	DecrBy(ctx context.Context, key string, decrement int64) (int64, error)
+	IncrBy(ctx context.Context, key string, increment int64) (int64, error)
 }
 
 type ListActiveEventsUseCase struct {
