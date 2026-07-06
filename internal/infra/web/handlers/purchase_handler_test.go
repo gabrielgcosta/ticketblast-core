@@ -13,6 +13,7 @@ import (
 	"github.com/gabrielgcosta/ticketblast-core/internal/infra/web/middleware"
 	"github.com/gabrielgcosta/ticketblast-core/internal/usecase"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -56,23 +57,12 @@ func (m *mockCacheServiceForPurchase) IncrBy(ctx context.Context, key string, in
 	return m.incrByFn(ctx, key, increment)
 }
 
-type mockOrderRepository struct {
-	createFn     func(ctx context.Context, order *entity.Order) (*entity.Order, error)
-	createItemFn func(ctx context.Context, item *entity.OrderItem) (*entity.OrderItem, error)
+type mockEventPublisherForHandler struct {
+	publishFn func(ctx context.Context, event *usecase.OrderCreatedEvent) error
 }
 
-func (m *mockOrderRepository) Create(ctx context.Context, order *entity.Order) (*entity.Order, error) {
-	return m.createFn(ctx, order)
-}
-
-func (m *mockOrderRepository) CreateItem(ctx context.Context, item *entity.OrderItem) (*entity.OrderItem, error) {
-	return m.createItemFn(ctx, item)
-}
-
-type mockTxManagerForHandler struct{}
-
-func (m *mockTxManagerForHandler) RunInTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	return fn(ctx)
+func (m *mockEventPublisherForHandler) PublishOrderCreated(ctx context.Context, event *usecase.OrderCreatedEvent) error {
+	return m.publishFn(ctx, event)
 }
 
 func TestPurchaseHandler_Purchase_Success(t *testing.T) {
@@ -88,23 +78,6 @@ func TestPurchaseHandler_Purchase_Success(t *testing.T) {
 				TotalQuantity: 10,
 			}, nil
 		},
-		updateStockFn: func(ctx context.Context, id string, quantity int) error {
-			return nil
-		},
-	}
-
-	mockOrderRepo := &mockOrderRepository{
-		createFn: func(ctx context.Context, order *entity.Order) (*entity.Order, error) {
-			return &entity.Order{
-				ID:          "order-123",
-				UserID:      order.UserID,
-				Status:      order.Status,
-				TotalAmount: order.TotalAmount,
-			}, nil
-		},
-		createItemFn: func(ctx context.Context, item *entity.OrderItem) (*entity.OrderItem, error) {
-			return item, nil
-		},
 	}
 
 	mockCache := &mockCacheServiceForPurchase{
@@ -113,7 +86,15 @@ func TestPurchaseHandler_Purchase_Success(t *testing.T) {
 		},
 	}
 
-	purchaseUC := usecase.NewPurchaseUseCase(mockTicketRepo, mockOrderRepo, mockCache, &mockTxManagerForHandler{})
+	mockPublisher := &mockEventPublisherForHandler{
+		publishFn: func(ctx context.Context, event *usecase.OrderCreatedEvent) error {
+			assert.NotEmpty(t, event.OrderID)
+			assert.NoError(t, uuid.Validate(event.OrderID))
+			return nil
+		},
+	}
+
+	purchaseUC := usecase.NewPurchaseUseCase(mockTicketRepo, mockCache, mockPublisher)
 	handler := NewPurchaseHandler(purchaseUC)
 
 	tokenEngine := auth.NewTokenEngine("secret")
@@ -121,7 +102,6 @@ func TestPurchaseHandler_Purchase_Success(t *testing.T) {
 	r.Use(middleware.Auth(tokenEngine))
 	r.POST("/orders", handler.Purchase)
 
-	// Generate valid token
 	token, _ := tokenEngine.GenerateToken("user-123", "customer")
 
 	body := []byte(`{"event_id":"event-123","ticket_id":"ticket-123","quantity":2}`)
@@ -133,7 +113,8 @@ func TestPurchaseHandler_Purchase_Success(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusCreated, w.Code)
-	assert.Contains(t, w.Body.String(), `"order_id":"order-123"`)
+	assert.Contains(t, w.Body.String(), `"status":"pending"`)
+	assert.Contains(t, w.Body.String(), `"order_id"`)
 }
 
 func TestPurchaseHandler_Purchase_SoldOut(t *testing.T) {
@@ -148,7 +129,13 @@ func TestPurchaseHandler_Purchase_SoldOut(t *testing.T) {
 		},
 	}
 
-	purchaseUC := usecase.NewPurchaseUseCase(nil, nil, mockCache, &mockTxManagerForHandler{})
+	mockPublisher := &mockEventPublisherForHandler{
+		publishFn: func(ctx context.Context, event *usecase.OrderCreatedEvent) error {
+			return nil
+		},
+	}
+
+	purchaseUC := usecase.NewPurchaseUseCase(nil, mockCache, mockPublisher)
 	handler := NewPurchaseHandler(purchaseUC)
 
 	tokenEngine := auth.NewTokenEngine("secret")

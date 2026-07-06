@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gabrielgcosta/ticketblast-core/internal/entity"
+	"github.com/google/uuid"
 )
 
 var (
@@ -30,22 +30,19 @@ type PurchaseOutput struct {
 
 type PurchaseUseCase struct {
 	ticketRepo TicketRepository
-	orderRepo  OrderRepository
 	cache      CacheService
-	txManager  TxManager
+	publisher  EventPublisher
 }
 
 func NewPurchaseUseCase(
 	ticketRepo TicketRepository,
-	orderRepo OrderRepository,
 	cache CacheService,
-	txManager TxManager,
+	publisher EventPublisher,
 ) *PurchaseUseCase {
 	return &PurchaseUseCase{
 		ticketRepo: ticketRepo,
-		orderRepo:  orderRepo,
 		cache:      cache,
-		txManager:  txManager,
+		publisher:  publisher,
 	}
 }
 
@@ -56,7 +53,7 @@ func (uc *PurchaseUseCase) Execute(ctx context.Context, input PurchaseInput) (*P
 
 	redisKey := fmt.Sprintf("event:%s:stock", input.EventID)
 
-	// 1. Atomic Redis Decrement
+	// 1. Atomic Redis Decrement (Before any database operations or long validations)
 	newStock, err := uc.cache.DecrBy(ctx, redisKey, int64(input.Quantity))
 	if err != nil {
 		return nil, fmt.Errorf("failed to decrement inventory in cache: %w", err)
@@ -71,72 +68,50 @@ func (uc *PurchaseUseCase) Execute(ctx context.Context, input PurchaseInput) (*P
 		return nil, ErrSoldOut
 	}
 
-	// 3. Database transaction for order placement
-	var createdOrder *entity.Order
-	dbErr := uc.txManager.RunInTx(ctx, func(ctx context.Context) error {
-		// A. Fetch ticket details
-		ticket, err := uc.ticketRepo.GetByID(ctx, input.TicketID)
-		if err != nil {
-			return ErrTicketNotFound
-		}
-
-		// B. Verify ticket belongs to event
-		if ticket.EventID != input.EventID {
-			return ErrTicketEventMismatch
-		}
-
-		// C. Double-check stock consistency in DB
-		if ticket.TotalQuantity < input.Quantity {
-			return errors.New("insufficient inventory in database")
-		}
-
-		// D. Calculate total amount
-		totalAmount := ticket.Price * float64(input.Quantity)
-
-		// E. Create order
-		order := &entity.Order{
-			UserID:      input.UserID,
-			Status:      entity.OrderStatusCompleted,
-			TotalAmount: totalAmount,
-		}
-		createdOrder, err = uc.orderRepo.Create(ctx, order)
-		if err != nil {
-			return fmt.Errorf("failed to save order: %w", err)
-		}
-
-		// F. Create order item
-		item := &entity.OrderItem{
-			OrderID:   createdOrder.ID,
-			TicketID:  input.TicketID,
-			Quantity:  input.Quantity,
-			UnitPrice: ticket.Price,
-		}
-		_, err = uc.orderRepo.CreateItem(ctx, item)
-		if err != nil {
-			return fmt.Errorf("failed to save order item: %w", err)
-		}
-
-		// G. Reduce ticket stock in database
-		err = uc.ticketRepo.UpdateStock(ctx, input.TicketID, input.Quantity)
-		if err != nil {
-			return fmt.Errorf("failed to update ticket stock in database: %w", err)
-		}
-
-		return nil
-	})
-
-	// 4. If database transaction fails, revert Redis decrement
-	if dbErr != nil {
+	// 3. Fetch ticket details to validate and compute amount
+	ticket, err := uc.ticketRepo.GetByID(ctx, input.TicketID)
+	if err != nil {
 		_, revertErr := uc.cache.IncrBy(ctx, redisKey, int64(input.Quantity))
 		if revertErr != nil {
-			return nil, fmt.Errorf("revert failed after database error: %w, database error: %w", revertErr, dbErr)
+			return nil, fmt.Errorf("revert failed after ticket query failure: %w, original error: %w", revertErr, ErrTicketNotFound)
 		}
-		return nil, dbErr
+		return nil, ErrTicketNotFound
+	}
+
+	// 4. Verify ticket belongs to the event
+	if ticket.EventID != input.EventID {
+		_, revertErr := uc.cache.IncrBy(ctx, redisKey, int64(input.Quantity))
+		if revertErr != nil {
+			return nil, fmt.Errorf("revert failed after ticket event mismatch: %w, original error: %w", revertErr, ErrTicketEventMismatch)
+		}
+		return nil, ErrTicketEventMismatch
+	}
+
+	// 5. Generate unique Order ID
+	orderID := uuid.New().String()
+	totalAmount := ticket.Price * float64(input.Quantity)
+
+	// 6. Build and publish event to RabbitMQ
+	event := &OrderCreatedEvent{
+		OrderID:  orderID,
+		UserID:   input.UserID,
+		EventID:  input.EventID,
+		TicketID: input.TicketID,
+		Quantity: input.Quantity,
+		Price:    ticket.Price,
+	}
+
+	if err := uc.publisher.PublishOrderCreated(ctx, event); err != nil {
+		_, revertErr := uc.cache.IncrBy(ctx, redisKey, int64(input.Quantity))
+		if revertErr != nil {
+			return nil, fmt.Errorf("revert failed after publisher error: %w, publisher error: %w", revertErr, err)
+		}
+		return nil, fmt.Errorf("failed to publish order event: %w", err)
 	}
 
 	return &PurchaseOutput{
-		OrderID:     createdOrder.ID,
-		TotalAmount: createdOrder.TotalAmount,
-		Status:      string(createdOrder.Status),
+		OrderID:     orderID,
+		TotalAmount: totalAmount,
+		Status:      "pending",
 	}, nil
 }

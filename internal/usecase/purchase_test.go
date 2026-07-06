@@ -7,21 +7,9 @@ import (
 	"time"
 
 	"github.com/gabrielgcosta/ticketblast-core/internal/entity"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 )
-
-type mockOrderRepository struct {
-	createFn     func(ctx context.Context, order *entity.Order) (*entity.Order, error)
-	createItemFn func(ctx context.Context, item *entity.OrderItem) (*entity.OrderItem, error)
-}
-
-func (m *mockOrderRepository) Create(ctx context.Context, order *entity.Order) (*entity.Order, error) {
-	return m.createFn(ctx, order)
-}
-
-func (m *mockOrderRepository) CreateItem(ctx context.Context, item *entity.OrderItem) (*entity.OrderItem, error) {
-	return m.createItemFn(ctx, item)
-}
 
 type mockCacheServiceForPurchase struct {
 	decrByFn func(ctx context.Context, key string, decrement int64) (int64, error)
@@ -44,17 +32,26 @@ func (m *mockCacheServiceForPurchase) IncrBy(ctx context.Context, key string, in
 	return m.incrByFn(ctx, key, increment)
 }
 
+type mockEventPublisher struct {
+	publishFn func(ctx context.Context, event *OrderCreatedEvent) error
+}
+
+func (m *mockEventPublisher) PublishOrderCreated(ctx context.Context, event *OrderCreatedEvent) error {
+	return m.publishFn(ctx, event)
+}
+
 func TestPurchaseUseCase_Success(t *testing.T) {
 	redisKey := "event:event-123:stock"
 	decrCalled := false
 	incrCalled := false
+	publishCalled := false
 
 	mockCache := &mockCacheServiceForPurchase{
 		decrByFn: func(ctx context.Context, key string, decrement int64) (int64, error) {
 			assert.Equal(t, redisKey, key)
 			assert.Equal(t, int64(2), decrement)
 			decrCalled = true
-			return 8, nil // Remaining stock: 8
+			return 8, nil
 		},
 		incrByFn: func(ctx context.Context, key string, increment int64) (int64, error) {
 			t.Fatal("IncrBy should not be called on success")
@@ -73,36 +70,23 @@ func TestPurchaseUseCase_Success(t *testing.T) {
 				TotalQuantity: 10,
 			}, nil
 		},
-		updateStockFn: func(ctx context.Context, id string, quantity int) error {
-			assert.Equal(t, "ticket-123", id)
-			assert.Equal(t, 2, quantity)
+	}
+
+	mockPublisher := &mockEventPublisher{
+		publishFn: func(ctx context.Context, event *OrderCreatedEvent) error {
+			assert.NotEmpty(t, event.OrderID)
+			assert.NoError(t, uuid.Validate(event.OrderID))
+			assert.Equal(t, "user-123", event.UserID)
+			assert.Equal(t, "event-123", event.EventID)
+			assert.Equal(t, "ticket-123", event.TicketID)
+			assert.Equal(t, 2, event.Quantity)
+			assert.Equal(t, 150.00, event.Price)
+			publishCalled = true
 			return nil
 		},
 	}
 
-	mockOrderRepo := &mockOrderRepository{
-		createFn: func(ctx context.Context, order *entity.Order) (*entity.Order, error) {
-			assert.Equal(t, "user-123", order.UserID)
-			assert.Equal(t, entity.OrderStatusCompleted, order.Status)
-			assert.Equal(t, 300.00, order.TotalAmount)
-			return &entity.Order{
-				ID:          "order-123",
-				UserID:      order.UserID,
-				Status:      order.Status,
-				TotalAmount: order.TotalAmount,
-				CreatedAt:   time.Now(),
-			}, nil
-		},
-		createItemFn: func(ctx context.Context, item *entity.OrderItem) (*entity.OrderItem, error) {
-			assert.Equal(t, "order-123", item.OrderID)
-			assert.Equal(t, "ticket-123", item.TicketID)
-			assert.Equal(t, 2, item.Quantity)
-			assert.Equal(t, 150.00, item.UnitPrice)
-			return item, nil
-		},
-	}
-
-	uc := NewPurchaseUseCase(mockTicketRepo, mockOrderRepo, mockCache, &mockTxManager{})
+	uc := NewPurchaseUseCase(mockTicketRepo, mockCache, mockPublisher)
 	input := PurchaseInput{
 		UserID:   "user-123",
 		EventID:  "event-123",
@@ -114,11 +98,12 @@ func TestPurchaseUseCase_Success(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.NotNil(t, output)
-	assert.Equal(t, "order-123", output.OrderID)
+	assert.NotEmpty(t, output.OrderID)
 	assert.Equal(t, 300.00, output.TotalAmount)
-	assert.Equal(t, string(entity.OrderStatusCompleted), output.Status)
+	assert.Equal(t, "pending", output.Status)
 	assert.True(t, decrCalled)
 	assert.False(t, incrCalled)
+	assert.True(t, publishCalled)
 }
 
 func TestPurchaseUseCase_SoldOut(t *testing.T) {
@@ -131,7 +116,7 @@ func TestPurchaseUseCase_SoldOut(t *testing.T) {
 			assert.Equal(t, redisKey, key)
 			assert.Equal(t, int64(5), decrement)
 			decrCalled = true
-			return -3, nil // Insufficient stock (e.g. only 2 available, tried to buy 5)
+			return -3, nil
 		},
 		incrByFn: func(ctx context.Context, key string, increment int64) (int64, error) {
 			assert.Equal(t, redisKey, key)
@@ -148,9 +133,14 @@ func TestPurchaseUseCase_SoldOut(t *testing.T) {
 		},
 	}
 
-	mockOrderRepo := &mockOrderRepository{}
+	mockPublisher := &mockEventPublisher{
+		publishFn: func(ctx context.Context, event *OrderCreatedEvent) error {
+			t.Fatal("Publish should not be called when sold out")
+			return nil
+		},
+	}
 
-	uc := NewPurchaseUseCase(mockTicketRepo, mockOrderRepo, mockCache, &mockTxManager{})
+	uc := NewPurchaseUseCase(mockTicketRepo, mockCache, mockPublisher)
 	input := PurchaseInput{
 		UserID:   "user-123",
 		EventID:  "event-123",
@@ -166,7 +156,7 @@ func TestPurchaseUseCase_SoldOut(t *testing.T) {
 	assert.True(t, incrCalled)
 }
 
-func TestPurchaseUseCase_DBFailure_RevertsRedis(t *testing.T) {
+func TestPurchaseUseCase_PublishFailure_RevertsRedis(t *testing.T) {
 	redisKey := "event:event-123:stock"
 	decrCalled := false
 	incrCalled := false
@@ -195,23 +185,15 @@ func TestPurchaseUseCase_DBFailure_RevertsRedis(t *testing.T) {
 				TotalQuantity: 10,
 			}, nil
 		},
-		updateStockFn: func(ctx context.Context, id string, quantity int) error {
-			return errors.New("database down")
+	}
+
+	mockPublisher := &mockEventPublisher{
+		publishFn: func(ctx context.Context, event *OrderCreatedEvent) error {
+			return errors.New("rabbitmq down")
 		},
 	}
 
-	mockOrderRepo := &mockOrderRepository{
-		createFn: func(ctx context.Context, order *entity.Order) (*entity.Order, error) {
-			return &entity.Order{
-				ID: "order-123",
-			}, nil
-		},
-		createItemFn: func(ctx context.Context, item *entity.OrderItem) (*entity.OrderItem, error) {
-			return item, nil
-		},
-	}
-
-	uc := NewPurchaseUseCase(mockTicketRepo, mockOrderRepo, mockCache, &mockTxManager{})
+	uc := NewPurchaseUseCase(mockTicketRepo, mockCache, mockPublisher)
 	input := PurchaseInput{
 		UserID:   "user-123",
 		EventID:  "event-123",
@@ -222,7 +204,7 @@ func TestPurchaseUseCase_DBFailure_RevertsRedis(t *testing.T) {
 	output, err := uc.Execute(context.Background(), input)
 
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "database down")
+	assert.Contains(t, err.Error(), "rabbitmq down")
 	assert.Nil(t, output)
 	assert.True(t, decrCalled)
 	assert.True(t, incrCalled)

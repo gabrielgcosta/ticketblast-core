@@ -13,21 +13,27 @@ import (
 
 const createOrder = `-- name: CreateOrder :one
 INSERT INTO orders (
-    user_id, status, total_amount
+    id, user_id, status, total_amount
 ) VALUES (
-    $1, $2, $3
+    $1, $2, $3, $4
 )
 RETURNING id, user_id, status, total_amount, created_at, updated_at
 `
 
 type CreateOrderParams struct {
+	ID          pgtype.UUID    `json:"id"`
 	UserID      pgtype.UUID    `json:"user_id"`
 	Status      string         `json:"status"`
 	TotalAmount pgtype.Numeric `json:"total_amount"`
 }
 
 func (q *Queries) CreateOrder(ctx context.Context, arg CreateOrderParams) (Order, error) {
-	row := q.db.QueryRow(ctx, createOrder, arg.UserID, arg.Status, arg.TotalAmount)
+	row := q.db.QueryRow(ctx, createOrder,
+		arg.ID,
+		arg.UserID,
+		arg.Status,
+		arg.TotalAmount,
+	)
 	var i Order
 	err := row.Scan(
 		&i.ID,

@@ -10,6 +10,7 @@ import (
 	"github.com/gabrielgcosta/ticketblast-core/db"
 	"github.com/gabrielgcosta/ticketblast-core/db/sqlc"
 	"github.com/gabrielgcosta/ticketblast-core/internal/infra/auth"
+	"github.com/gabrielgcosta/ticketblast-core/internal/infra/broker"
 	"github.com/gabrielgcosta/ticketblast-core/internal/infra/cache"
 	infraDB "github.com/gabrielgcosta/ticketblast-core/internal/infra/db"
 	"github.com/gabrielgcosta/ticketblast-core/internal/infra/web/handlers"
@@ -107,15 +108,42 @@ func main() {
 	userRepo := infraDB.NewPostgresUserRepository(queries)
 	eventRepo := infraDB.NewPostgresEventRepository(queries)
 	ticketRepo := infraDB.NewPostgresTicketRepository(queries)
-	orderRepo := infraDB.NewPostgresOrderRepository(queries)
 	txManager := infraDB.NewPostgresTxManager(pool, queries)
 
 	// Initialize use cases
 	registerUC := usecase.NewRegisterUserUseCase(userRepo)
 	loginUC := usecase.NewLoginUserUseCase(userRepo)
 	listActiveEventsUC := usecase.NewListActiveEventsUseCase(eventRepo, redisCache)
+	// Initialize RabbitMQ publisher
+	rabbitmqURL := os.Getenv("RABBITMQ_URL")
+	if rabbitmqURL == "" {
+		rabbitmqUser := os.Getenv("RABBITMQ_DEFAULT_USER")
+		if rabbitmqUser == "" {
+			rabbitmqUser = "guest"
+		}
+		rabbitmqPass := os.Getenv("RABBITMQ_DEFAULT_PASS")
+		if rabbitmqPass == "" {
+			rabbitmqPass = "guest"
+		}
+		rabbitmqHost := os.Getenv("RABBITMQ_HOST")
+		if rabbitmqHost == "" {
+			rabbitmqHost = "localhost"
+		}
+		rabbitmqPort := os.Getenv("RABBITMQ_PORT")
+		if rabbitmqPort == "" {
+			rabbitmqPort = "5672"
+		}
+		rabbitmqURL = fmt.Sprintf("amqp://%s:%s@%s:%s/", rabbitmqUser, rabbitmqPass, rabbitmqHost, rabbitmqPort)
+	}
+
+	publisher, err := broker.NewRabbitMQPublisher(rabbitmqURL, "orders_exchange")
+	if err != nil {
+		logger.Log.Fatal("Critical: Failed to initialize RabbitMQ publisher", zap.Error(err))
+	}
+	defer publisher.Close()
+
 	createEventUC := usecase.NewCreateEventUseCase(eventRepo, ticketRepo, redisCache, txManager)
-	purchaseUC := usecase.NewPurchaseUseCase(ticketRepo, orderRepo, redisCache, txManager)
+	purchaseUC := usecase.NewPurchaseUseCase(ticketRepo, redisCache, publisher)
 
 	// Initialize Auth Token Engine
 	jwtSecret := os.Getenv("JWT_SECRET")
