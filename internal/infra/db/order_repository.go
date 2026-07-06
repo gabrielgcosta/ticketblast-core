@@ -6,6 +6,8 @@ import (
 
 	"github.com/gabrielgcosta/ticketblast-core/db/sqlc"
 	"github.com/gabrielgcosta/ticketblast-core/internal/entity"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type PostgresOrderRepository struct {
@@ -24,12 +26,28 @@ func (r *PostgresOrderRepository) getQueries(ctx context.Context) *sqlc.Queries 
 }
 
 func (r *PostgresOrderRepository) Create(ctx context.Context, order *entity.Order) (*entity.Order, error) {
+	var orderUID pgtype.UUID
+	var err error
+	if order.ID != "" {
+		orderUID, err = toUUID(order.ID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid order uuid: %w", err)
+		}
+	} else {
+		newUUID, err := uuid.NewRandom()
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate order uuid: %w", err)
+		}
+		orderUID = pgtype.UUID{Bytes: newUUID, Valid: true}
+	}
+
 	userUID, err := toUUID(order.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid user uuid: %w", err)
 	}
 
 	params := sqlc.CreateOrderParams{
+		ID:          orderUID,
 		UserID:      userUID,
 		Status:      string(order.Status),
 		TotalAmount: toNumeric(order.TotalAmount),
