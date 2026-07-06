@@ -40,6 +40,22 @@ func (s *RedisCacheService) Set(ctx context.Context, key string, value interface
 	return nil
 }
 
+func (s *RedisCacheService) DecrBy(ctx context.Context, key string, decrement int64) (int64, error) {
+	val, err := s.client.DecrBy(ctx, key, decrement).Result()
+	if err != nil {
+		return 0, fmt.Errorf("failed to decrement key in redis: %w", err)
+	}
+	return val, nil
+}
+
+func (s *RedisCacheService) IncrBy(ctx context.Context, key string, increment int64) (int64, error) {
+	val, err := s.client.IncrBy(ctx, key, increment).Result()
+	if err != nil {
+		return 0, fmt.Errorf("failed to increment key in redis: %w", err)
+	}
+	return val, nil
+}
+
 func (s *RedisCacheService) Ping(ctx context.Context) error {
 	return s.client.Ping(ctx).Err()
 }
@@ -47,3 +63,4 @@ func (s *RedisCacheService) Ping(ctx context.Context) error {
 func (s *RedisCacheService) Close() error {
 	return s.client.Close()
 }
+
