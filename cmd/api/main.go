@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
 
 	"github.com/gabrielgcosta/ticketblast-core/db"
 	"github.com/gabrielgcosta/ticketblast-core/db/sqlc"
@@ -184,8 +187,30 @@ func main() {
 		private.POST("/orders", purchaseHandler.Purchase)
 	}
 
-	logger.Log.Info("Starting API server on port :8080...")
-	if err := r.Run(":8080"); err != nil {
-		logger.Log.Fatal("Critical: Server failed to start", zap.Error(err))
+	srv := &http.Server{
+		Addr:    ":8080",
+		Handler: r,
 	}
+
+	go func() {
+		logger.Log.Info("Starting API server on port :8080...")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Log.Fatal("Critical: Server failed to start", zap.Error(err))
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+	<-quit
+
+	logger.Log.Info("Shutting down API server...")
+
+	ctxShutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctxShutdown); err != nil {
+		logger.Log.Fatal("Critical: Server forced to shutdown", zap.Error(err))
+	}
+
+	logger.Log.Info("API server exited cleanly")
 }
